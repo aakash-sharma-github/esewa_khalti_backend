@@ -20,9 +20,13 @@ app.options("*", cors());
 app.use(express.urlencoded({ extended: true, limit: "20kb" }));
 
 // import routers because of segrigated code.
-import router  from "./routes/esewa.route.js"
+import productRouter from "./routes/product.route.js"
+import esewaRouter from "./routes/esewa.route.js"
+import khaltiRouter from "./routes/khalti.route.js"
 
 // router decleration
-app.use("/api/payment", router);
+app.use("/api/products", productRouter);
+app.use("/api/payment-esewa", esewaRouter);
+app.use("/api/payment-khalti", khaltiRouter);
 
 export { app };

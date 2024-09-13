@@ -7,14 +7,9 @@ import { ApiResponse } from "../utils/ApiResponse.js";
 import { asyncHandler } from "../utils/asyncHandler.js";
 
 
-import path from 'path';
-import { fileURLToPath } from 'url';
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-
 const initializeEsewa = asyncHandler(async (req, res) => {
     try {
+        // * get payment data from body
         const { productId, totalPrice } = req.body;
         // * check if product exists and price is correct
         const productData = await Product.findOne({
@@ -37,7 +32,7 @@ const initializeEsewa = asyncHandler(async (req, res) => {
         // * create esewa payment
         const paymentInitiate = await getEsewaPaymentHash({
             amount: totalPrice,
-            transaction_id: purchasedProductData._id
+            transaction_uuid: purchasedProductData._id
         })
 
         const responseData = {
@@ -54,24 +49,29 @@ const initializeEsewa = asyncHandler(async (req, res) => {
     }
 })
 
-const completePayment = asyncHandler(async (req, res) => {
+const completeEsewaPayment = asyncHandler(async (req, res) => {
     // * get payment data from query string.
     const { requestedPaymentData } = req.query;
     console.log(`req: ${req.query}`)
+
+     // * Validate that the payment data is a valid Base64 string
+     if (!requestedPaymentData || !/^[A-Za-z0-9+/=]+$/.test(requestedPaymentData)) {
+        throw new ApiError(400, "Invalid payment data format.");
+    }
 
     try {
         // * verify payment with esewa
         const paymentInformation = await verifyEsewaPayment(requestedPaymentData);
         console.log(`payment: ${paymentInformation}`)
 
-        // Check if paymentInformation is valid
+        // * Check if paymentInformation is valid
         if (!paymentInformation) {
             throw new ApiError(500, 'Payment verification failed.');
         }
 
         // * find purchased product in db by transaction id
         const purchasedProductData = await PurchasedProduct.findById(
-            paymentInformation.response.transaction_id
+            paymentInformation.response.transaction_uuid
         );
 
         // * check if purchased product exists
@@ -79,11 +79,20 @@ const completePayment = asyncHandler(async (req, res) => {
             throw new ApiError(404, 'Purchased product not found.');
         }
 
+        // * Try decoding payment information fields
+        let transactionCode, transactionUUID;
+        try {
+            transactionCode = atob(paymentInformation.decoded_signature.transaction_code);
+            transactionUUID = atob(paymentInformation.decoded_signature.transaction_uuid);
+        } catch (decodeError) {
+            throw new ApiError(500, 'Failed to decode payment data. Invalid encoding.');
+        }
+
         // * create payment in db
         const paymentData = await Payment.create({
-            pidx: paymentInformation.decoded_signature.transaction_code,
-            transactionId: paymentInformation.decoded_signature.transaction_id,
-            productId: paymentInformation.response.transaction_id,
+            pidx: transactionCode,
+            transactionId: transactionUUID,
+            productId: paymentInformation.response.transaction_uuid,
             amount: paymentInformation.totalPrice,
             dataFromVerificationReq: paymentInformation,
             apiQueryFromUser: req.query,
@@ -93,10 +102,10 @@ const completePayment = asyncHandler(async (req, res) => {
 
         // * update purchased product in db to completed
         await PurchasedProduct.findByIdAndUpdate(
-            paymentInformation.response.transaction_id,
+            paymentInformation.response.transaction_uuid,
             {
                 $set: {
-                    status: "completed"
+                    status: "success"
                 }
             }
         )
@@ -111,42 +120,8 @@ const completePayment = asyncHandler(async (req, res) => {
     }
 })
 
-const createProduct = asyncHandler(async (req, res) => {
-    try {
-        const { name, price, category } = req.body;
-
-        // * check if all fields are filled.
-        if (!name || !price || !category) {
-            throw new ApiError(400, 'All fields are required.');
-        }
-
-        // * create product in db
-        const productData = await Product.create({
-            name: name,
-            price: price,
-            category: category
-        })
-
-        // * return response with product data
-        return res.status(200)
-            .json(new ApiResponse(200, productData, "Product created successfully."));
-    } catch (error) {
-        console.log(error)
-        throw new ApiError(500, error.message);
-    }
-})
-
-const paymentRoute = asyncHandler(async (req, res) => {
-    try {
-        res.sendFile(path.join(__dirname, '../templates/index.html'));
-    } catch (error) {
-        console.error(error);
-    }
-});
 
 export {
     initializeEsewa,
-    completePayment,
-    createProduct,
-    paymentRoute
+    completeEsewaPayment
 }
