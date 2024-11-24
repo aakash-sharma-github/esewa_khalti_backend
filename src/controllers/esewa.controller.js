@@ -50,75 +50,66 @@ const initializeEsewa = asyncHandler(async (req, res) => {
 })
 
 const completeEsewaPayment = asyncHandler(async (req, res) => {
-    // * get payment data from query string.
-    const { requestedPaymentData } = req.query;
-    console.log(`req: ${req.query}`)
+    console.log("Received query parameters:", req.query);
 
-     // * Validate that the payment data is a valid Base64 string
-     if (!requestedPaymentData || !/^[A-Za-z0-9+/=]+$/.test(requestedPaymentData)) {
-        throw new ApiError(400, "Invalid payment data format.");
+    // Validate query parameters
+    if (!req.query || Object.keys(req.query).length === 0) {
+        throw new ApiError(400, "Missing payment data in query parameters");
+    }
+
+    // * get encoded data from query
+    const encodedData = Object.values(req.query)[0]; // Assuming the encoded data is the first (and only) value
+
+    // * check if encoded data is valid
+    if (!encodedData || !/^[A-Za-z0-9+/=]+$/.test(encodedData)) {
+        throw new ApiError(400, "Invalid payment data format");
     }
 
     try {
-        // * verify payment with esewa
-        const paymentInformation = await verifyEsewaPayment(requestedPaymentData);
-        console.log(`payment: ${paymentInformation}`)
+        const paymentInformation = await verifyEsewaPayment(encodedData);
+        console.log("Payment verification result:", paymentInformation);
 
-        // * Check if paymentInformation is valid
-        if (!paymentInformation) {
-            throw new ApiError(500, 'Payment verification failed.');
+        // * check if payment information is valid
+        if (!paymentInformation || !paymentInformation.response) {
+            throw new ApiError(500, 'Payment verification failed');
         }
 
-        // * find purchased product in db by transaction id
-        const purchasedProductData = await PurchasedProduct.findById(
-            paymentInformation.response.transaction_uuid
-        );
+        const { transaction_uuid } = paymentInformation.response;
+        const purchasedProductData = await PurchasedProduct.findById(transaction_uuid);
 
         // * check if purchased product exists
         if (!purchasedProductData) {
-            throw new ApiError(404, 'Purchased product not found.');
+            throw new ApiError(404, 'Purchased product not found');
         }
 
-        // * Try decoding payment information fields
-        let transactionCode, transactionUUID;
-        try {
-            transactionCode = atob(paymentInformation.decoded_signature.transaction_code);
-            transactionUUID = atob(paymentInformation.decoded_signature.transaction_uuid);
-        } catch (decodeError) {
-            throw new ApiError(500, 'Failed to decode payment data. Invalid encoding.');
-        }
+        const { transaction_code, transaction_uuid: decodedUUID } = paymentInformation.decoded_signature;
 
         // * create payment in db
         const paymentData = await Payment.create({
-            pidx: transactionCode,
-            transactionId: transactionUUID,
-            productId: paymentInformation.response.transaction_uuid,
+            pidx: atob(transaction_code),
+            transactionId: atob(decodedUUID),
+            productId: transaction_uuid,
             amount: paymentInformation.totalPrice,
             dataFromVerificationReq: paymentInformation,
             apiQueryFromUser: req.query,
             paymentGateway: 'esewa',
-            status: "success"
-        })
+            status: "completed"
+        });
 
-        // * update purchased product in db to completed
-        await PurchasedProduct.findByIdAndUpdate(
-            paymentInformation.response.transaction_uuid,
-            {
-                $set: {
-                    status: "success"
-                }
-            }
-        )
+        // * update purchased product status
+        await PurchasedProduct.findByIdAndUpdate(transaction_uuid, {
+            $set: { status: "completed" }
+        });
 
-        // * return response with payment data
-        return res.status(200)
-            .json(new ApiResponse(200, paymentData, "Payment completed successfully."));
+        return res.status(200).json(new ApiResponse(200, paymentData, "Payment completed successfully"));
 
     } catch (error) {
-        console.log(error);
-        throw new ApiError(500, error.message);
+        console.error("Error in completeEsewaPayment:", error);
+        const statusCode = error instanceof ApiError ? error.statusCode : 500;
+        const message = error instanceof ApiError ? error.message : "An error occurred while processing the payment";
+        return res.status(statusCode).json(new ApiResponse(statusCode, null, message));
     }
-})
+});
 
 
 export {
